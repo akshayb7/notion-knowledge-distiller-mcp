@@ -1,9 +1,10 @@
 """
-Notion API client for creating structured knowledge pages.
+Notion API client for creating structured knowledge pages and database entries.
 """
 
 import requests
 from typing import Optional, Dict, Any, List
+from datetime import datetime
 
 
 class NotionClient:
@@ -23,6 +24,101 @@ class NotionClient:
             "Content-Type": "application/json",
             "Notion-Version": "2022-06-28",
         }
+    
+    def create_database_entry(
+        self,
+        database_id: str,
+        title: str,
+        conversation_type: str,
+        topics: List[str],
+        confidence: str,
+        content_blocks: List[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        """
+        Create a new entry in a Notion database.
+        
+        Args:
+            database_id: The database ID to create the entry in
+            title: Entry title
+            conversation_type: Type of conversation (project_problem_solving, etc.)
+            topics: List of topic tags
+            confidence: Classification confidence (high, medium, low)
+            content_blocks: List of Notion block objects for page content
+        
+        Returns:
+            Dictionary containing the created page data including URL
+        
+        Raises:
+            Exception: If the API request fails
+        """
+        # Map conversation types to display names
+        type_mapping = {
+            "project_problem_solving": "Project Problem Solving",
+            "idea_brainstorming": "Idea Brainstorming",
+            "learning_educational": "Learning Educational",
+            "general_discussion": "General Discussion"
+        }
+        
+        # Prepare database entry data
+        entry_data = {
+            "parent": {
+                "type": "database_id",
+                "database_id": database_id
+            },
+            "properties": {
+                "Title": {
+                    "title": [
+                        {
+                            "text": {
+                                "content": title
+                            }
+                        }
+                    ]
+                },
+                "Type": {
+                    "select": {
+                        "name": type_mapping.get(conversation_type, "General Discussion")
+                    }
+                },
+                "Date": {
+                    "date": {
+                        "start": datetime.now().isoformat()
+                    }
+                },
+                "Topics": {
+                    "multi_select": [
+                        {"name": topic} for topic in topics
+                    ]
+                },
+                "Status": {
+                    "select": {
+                        "name": "New"
+                    }
+                },
+                "Confidence": {
+                    "select": {
+                        "name": confidence.capitalize()
+                    }
+                }
+            },
+            "children": content_blocks,
+        }
+        
+        # Make API request
+        response = requests.post(
+            f"{self.base_url}/pages",
+            headers=self.headers,
+            json=entry_data,
+        )
+        
+        if response.status_code != 200:
+            error_data = response.json()
+            raise Exception(
+                f"Failed to create Notion database entry: {response.status_code} - "
+                f"{error_data.get('message', 'Unknown error')}"
+            )
+        
+        return response.json()
     
     def create_page(
         self,

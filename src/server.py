@@ -39,6 +39,7 @@ app = Server("notion-knowledge-distiller")
 # Configuration
 NOTION_API_KEY = os.getenv("NOTION_API_KEY")
 NOTION_PARENT_PAGE_ID = os.getenv("NOTION_PARENT_PAGE_ID")
+NOTION_DATABASE_ID = os.getenv("NOTION_DATABASE_ID")
 
 # Initialize Notion client if API key is available
 notion_client = NotionClient(NOTION_API_KEY) if NOTION_API_KEY else None
@@ -140,7 +141,8 @@ async def call_tool(name: str, arguments: Any) -> list[TextContent]:
                 text=f"🏓 Pong! You said: {message}\n\n"
                 f"✅ MCP Server is running!\n"
                 f"📝 Notion API Key: {'✓ Configured' if NOTION_API_KEY else '✗ Missing'}\n"
-                f"📄 Parent Page ID: {'✓ Configured' if NOTION_PARENT_PAGE_ID else '✗ Missing'}",
+                f"📄 Parent Page ID: {'✓ Configured' if NOTION_PARENT_PAGE_ID else '✗ Not set (optional)'}\n"
+                f"🗄️ Database ID: {'✓ Configured' if NOTION_DATABASE_ID else '✗ Missing'}",
             )
         ]
     
@@ -201,14 +203,15 @@ async def call_tool(name: str, arguments: Any) -> list[TextContent]:
                 )
             ]
         
-        if not NOTION_PARENT_PAGE_ID:
+        # Check if we should use database or pages
+        use_database = bool(NOTION_DATABASE_ID)
+        
+        if not use_database and not NOTION_PARENT_PAGE_ID:
             return [
                 TextContent(
                     type="text",
-                    text="❌ Error: Parent page ID not configured. Please:\n"
-                    "1. Create a page in Notion (e.g., 'Claude Notes')\n"
-                    "2. Share it with your integration\n"
-                    "3. Copy the page ID from the URL and add it to NOTION_PARENT_PAGE_ID in your .env file",
+                    text="❌ Error: Neither database ID nor parent page ID configured.\n"
+                    "Please set either NOTION_DATABASE_ID (recommended) or NOTION_PARENT_PAGE_ID in your .env file.",
                 )
             ]
         
@@ -231,18 +234,36 @@ async def call_tool(name: str, arguments: Any) -> list[TextContent]:
             # Parse the analysis JSON
             analysis = json.loads(analysis_json)
             
-            # Extract title
+            # Extract title and topics
             title = analysis.get("title", "Conversation Notes")
+            topics = analysis.get("topics", [])
+            
+            # Get confidence from previous classification (default to medium if not available)
+            confidence = "medium"  # We'll pass this from classify_conversation in Phase 4
             
             # Build page content based on conversation type
             content_blocks = notion_client.build_page_content(conversation_type, analysis)
             
-            # Create the Notion page
-            page_result = notion_client.create_page(
-                title=title,
-                content_blocks=content_blocks,
-                parent_page_id=NOTION_PARENT_PAGE_ID,
-            )
+            # Create database entry or page based on configuration
+            if use_database:
+                # Create database entry
+                page_result = notion_client.create_database_entry(
+                    database_id=NOTION_DATABASE_ID,
+                    title=title,
+                    conversation_type=conversation_type,
+                    topics=topics,
+                    confidence=confidence,
+                    content_blocks=content_blocks,
+                )
+                storage_type = "database entry"
+            else:
+                # Create page (legacy support)
+                page_result = notion_client.create_page(
+                    title=title,
+                    content_blocks=content_blocks,
+                    parent_page_id=NOTION_PARENT_PAGE_ID,
+                )
+                storage_type = "page"
             
             # Get page details
             page_url = page_result.get("url", "")
@@ -284,12 +305,13 @@ async def call_tool(name: str, arguments: Any) -> list[TextContent]:
             return [
                 TextContent(
                     type="text",
-                    text=f"✅ Successfully created Notion page!\n\n"
+                    text=f"✅ Successfully created Notion {storage_type}!\n\n"
                     f"📄 **Title**: {title}\n"
                     f"📑 **Type**: {type_name}\n"
+                    f"🗄️ **Storage**: {'Database' if use_database else 'Page'}\n"
                     f"🔗 **URL**: {page_url}\n"
-                    f"🆔 **Page ID**: {page_id}\n\n"
-                    f"The page includes:\n"
+                    f"🆔 **ID**: {page_id}\n\n"
+                    f"The {storage_type} includes:\n"
                     f"{sections_text}",
                 )
             ]
