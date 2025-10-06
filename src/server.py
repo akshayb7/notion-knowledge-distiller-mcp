@@ -2,7 +2,7 @@
 Notion Knowledge Distiller MCP Server
 
 A Model Context Protocol server that distills chat conversations 
-into structured Notion pages.
+into structured Notion pages with adaptive formatting based on conversation type.
 """
 
 import os
@@ -14,11 +14,21 @@ from mcp.types import Tool, TextContent
 
 try:
     from .notion_client import NotionClient
-    from .prompts import DISTILL_CONVERSATION_PROMPT
+    from .prompts import (
+        CONVERSATION_TYPES,
+        SCHEMA_TEMPLATES,
+        CLASSIFY_CONVERSATION_PROMPT,
+        EXTRACT_CONVERSATION_PROMPT
+    )
 except ImportError:
     # When running directly, use absolute imports
     from notion_client import NotionClient
-    from prompts import DISTILL_CONVERSATION_PROMPT
+    from prompts import (
+        CONVERSATION_TYPES,
+        SCHEMA_TEMPLATES,
+        CLASSIFY_CONVERSATION_PROMPT,
+        EXTRACT_CONVERSATION_PROMPT
+    )
 
 # Load environment variables
 load_dotenv()
@@ -54,41 +64,66 @@ async def list_tools() -> list[Tool]:
         ),
     ]
     
-    # Only add Notion tool if API key is configured
+    # Only add Notion tools if API key is configured
     if NOTION_API_KEY:
-        tools.append(
+        tools.extend([
             Tool(
-                name="create_notion_notes",
+                name="classify_conversation",
                 description=(
-                    "Distill the current conversation into structured notes and create a Notion page. "
-                    "This tool analyzes the conversation, extracts key insights, decisions, and action items, "
-                    "then creates a well-organized Notion page. Use this when the user explicitly asks to "
-                    "save, summarize, or create notes in Notion."
+                    "Classify the type of the current conversation. "
+                    "Analyzes the conversation and returns the primary type: "
+                    "project_problem_solving, idea_brainstorming, learning_educational, or general_discussion. "
+                    "This should be called FIRST before creating Notion notes."
                 ),
                 inputSchema={
                     "type": "object",
                     "properties": {
-                        "conversation": {
+                        "classification": {
                             "type": "string",
                             "description": (
-                                "The full conversation text to analyze and distill. "
-                                "Include all relevant messages from the conversation."
+                                "Your classification of the conversation in JSON format with fields: "
+                                "type (one of: project_problem_solving, idea_brainstorming, learning_educational, general_discussion), "
+                                "confidence (high/medium/low), and reasoning (brief explanation)."
+                            ),
+                        }
+                    },
+                    "required": ["classification"],
+                },
+            ),
+            Tool(
+                name="create_notion_notes",
+                description=(
+                    "Create structured notes in Notion based on the classified conversation type. "
+                    "This should be called AFTER classify_conversation. "
+                    "Extracts relevant information and creates a well-organized Notion page."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "conversation_type": {
+                            "type": "string",
+                            "description": (
+                                "The conversation type from classify_conversation. "
+                                "Must be one of: project_problem_solving, idea_brainstorming, "
+                                "learning_educational, general_discussion"
                             ),
                         },
                         "analysis": {
                             "type": "string",
                             "description": (
-                                "Your analysis of the conversation in JSON format with fields: "
-                                "title, summary, key_insights (array), decisions_made (array), "
-                                "action_items (array), and topics (array). "
-                                "This should be a structured distillation of the conversation."
+                                "Your structured analysis of the conversation in JSON format. "
+                                "The fields should match the conversation_type:\n"
+                                "- project_problem_solving: title, summary, key_insights, decisions_made, action_items, topics\n"
+                                "- idea_brainstorming: title, summary, core_ideas, interesting_points, follow_up_questions, topics\n"
+                                "- learning_educational: title, summary, key_concepts, examples, takeaways, topics\n"
+                                "- general_discussion: title, summary, main_points, topics"
                             ),
                         }
                     },
-                    "required": ["conversation", "analysis"],
+                    "required": ["conversation_type", "analysis"],
                 },
-            )
-        )
+            ),
+        ])
     
     return tools
 
@@ -104,9 +139,58 @@ async def call_tool(name: str, arguments: Any) -> list[TextContent]:
                 type="text",
                 text=f"🏓 Pong! You said: {message}\n\n"
                 f"✅ MCP Server is running!\n"
-                f"📝 Notion API Key: {'✓ Configured' if NOTION_API_KEY else '✗ Missing'}",
+                f"📝 Notion API Key: {'✓ Configured' if NOTION_API_KEY else '✗ Missing'}\n"
+                f"📄 Parent Page ID: {'✓ Configured' if NOTION_PARENT_PAGE_ID else '✗ Missing'}",
             )
         ]
+    
+    elif name == "classify_conversation":
+        try:
+            # Parse the classification JSON
+            classification_json = arguments.get("classification", "{}")
+            classification = json.loads(classification_json)
+            
+            # Extract fields
+            conv_type = classification.get("type", "general_discussion")
+            confidence = classification.get("confidence", "medium")
+            reasoning = classification.get("reasoning", "No reasoning provided")
+            
+            # Validate conversation type
+            valid_types = list(CONVERSATION_TYPES.keys())
+            if conv_type not in valid_types:
+                conv_type = "general_discussion"
+            
+            # Get type info
+            type_info = CONVERSATION_TYPES[conv_type]
+            type_display = conv_type.replace("_", " ").title()
+            
+            return [
+                TextContent(
+                    type="text",
+                    text=f"✅ Conversation Classified!\n\n"
+                    f"📑 **Type**: {type_display}\n"
+                    f"🎯 **Confidence**: {confidence}\n"
+                    f"💭 **Reasoning**: {reasoning}\n\n"
+                    f"This conversation will be structured with sections:\n"
+                    f"{', '.join(type_info['sections'])}\n\n"
+                    f"Ready to create the Notion page with this structure!",
+                )
+            ]
+        
+        except json.JSONDecodeError as e:
+            return [
+                TextContent(
+                    type="text",
+                    text=f"❌ Error: Failed to parse classification JSON.\n\nError: {str(e)}",
+                )
+            ]
+        except Exception as e:
+            return [
+                TextContent(
+                    type="text",
+                    text=f"❌ Error classifying conversation: {str(e)}",
+                )
+            ]
     
     elif name == "create_notion_notes":
         if not notion_client:
@@ -129,80 +213,84 @@ async def call_tool(name: str, arguments: Any) -> list[TextContent]:
             ]
         
         try:
-            # Parse the analysis JSON
+            # Get conversation type and analysis
+            conversation_type = arguments.get("conversation_type", "general_discussion")
             analysis_json = arguments.get("analysis", "{}")
+            
+            # Validate conversation type
+            valid_types = list(CONVERSATION_TYPES.keys())
+            if conversation_type not in valid_types:
+                return [
+                    TextContent(
+                        type="text",
+                        text=f"❌ Error: Invalid conversation type '{conversation_type}'. "
+                        f"Must be one of: {', '.join(valid_types)}",
+                    )
+                ]
+            
+            # Parse the analysis JSON
             analysis = json.loads(analysis_json)
             
-            # Extract structured data
+            # Extract title
             title = analysis.get("title", "Conversation Notes")
-            summary = analysis.get("summary", "")
-            key_insights = analysis.get("key_insights", [])
-            decisions_made = analysis.get("decisions_made", [])
-            action_items = analysis.get("action_items", [])
-            topics = analysis.get("topics", [])
             
-            # Build Notion page content
-            content_blocks = []
-            
-            # Add summary as a callout
-            if summary:
-                content_blocks.append(
-                    notion_client.build_callout_block(summary, "📝")
-                )
-                content_blocks.append(notion_client.build_paragraph_block(""))
-            
-            # Add topics as a callout
-            if topics:
-                topics_text = "Topics: " + ", ".join(topics)
-                content_blocks.append(
-                    notion_client.build_callout_block(topics_text, "🏷️")
-                )
-                content_blocks.append(notion_client.build_paragraph_block(""))
-            
-            # Add key insights section
-            if key_insights:
-                content_blocks.append(notion_client.build_heading_block("💡 Key Insights", 2))
-                for insight in key_insights:
-                    content_blocks.append(notion_client.build_bulleted_list_block(insight))
-                content_blocks.append(notion_client.build_paragraph_block(""))
-            
-            # Add decisions section
-            if decisions_made:
-                content_blocks.append(notion_client.build_heading_block("✅ Decisions Made", 2))
-                for decision in decisions_made:
-                    content_blocks.append(notion_client.build_bulleted_list_block(decision))
-                content_blocks.append(notion_client.build_paragraph_block(""))
-            
-            # Add action items section
-            if action_items:
-                content_blocks.append(notion_client.build_heading_block("📋 Action Items", 2))
-                for item in action_items:
-                    content_blocks.append(notion_client.build_todo_block(item, checked=False))
-                content_blocks.append(notion_client.build_paragraph_block(""))
+            # Build page content based on conversation type
+            content_blocks = notion_client.build_page_content(conversation_type, analysis)
             
             # Create the Notion page
             page_result = notion_client.create_page(
                 title=title,
                 content_blocks=content_blocks,
-                parent_page_id=NOTION_PARENT_PAGE_ID,  # Use configured parent page
+                parent_page_id=NOTION_PARENT_PAGE_ID,
             )
             
-            # Get page URL
+            # Get page details
             page_url = page_result.get("url", "")
             page_id = page_result.get("id", "")
+            
+            # Count sections for response
+            type_name = conversation_type.replace("_", " ").title()
+            
+            if conversation_type == "project_problem_solving":
+                section_counts = {
+                    "insights": len(analysis.get("key_insights", [])),
+                    "decisions": len(analysis.get("decisions_made", [])),
+                    "action_items": len(analysis.get("action_items", []))
+                }
+                sections_text = f"- {section_counts['insights']} key insights\n- {section_counts['decisions']} decisions\n- {section_counts['action_items']} action items"
+            
+            elif conversation_type == "idea_brainstorming":
+                section_counts = {
+                    "ideas": len(analysis.get("core_ideas", [])),
+                    "points": len(analysis.get("interesting_points", [])),
+                    "questions": len(analysis.get("follow_up_questions", []))
+                }
+                sections_text = f"- {section_counts['ideas']} core ideas\n- {section_counts['points']} interesting points\n- {section_counts['questions']} follow-up questions"
+            
+            elif conversation_type == "learning_educational":
+                section_counts = {
+                    "concepts": len(analysis.get("key_concepts", [])),
+                    "examples": len(analysis.get("examples", [])),
+                    "takeaways": len(analysis.get("takeaways", []))
+                }
+                sections_text = f"- {section_counts['concepts']} key concepts\n- {section_counts['examples']} examples\n- {section_counts['takeaways']} takeaways"
+            
+            else:  # general_discussion
+                section_counts = {
+                    "points": len(analysis.get("main_points", []))
+                }
+                sections_text = f"- {section_counts['points']} main points"
             
             return [
                 TextContent(
                     type="text",
                     text=f"✅ Successfully created Notion page!\n\n"
                     f"📄 **Title**: {title}\n"
+                    f"📑 **Type**: {type_name}\n"
                     f"🔗 **URL**: {page_url}\n"
                     f"🆔 **Page ID**: {page_id}\n\n"
-                    f"The page has been created in your Notion workspace with:\n"
-                    f"- Summary and topics\n"
-                    f"- {len(key_insights)} key insights\n"
-                    f"- {len(decisions_made)} decisions\n"
-                    f"- {len(action_items)} action items",
+                    f"The page includes:\n"
+                    f"{sections_text}",
                 )
             ]
         
