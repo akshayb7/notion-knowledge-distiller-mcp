@@ -324,6 +324,112 @@ class NotionClient:
         rich_text = block.get(block_type, {}).get("rich_text", [])
         return "".join([text.get("plain_text", "") for text in rich_text])
     
+    def append_to_page(
+        self,
+        page_id: str,
+        new_blocks: List[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        """
+        Append new blocks to an existing Notion page.
+        
+        Args:
+            page_id: The page ID to append to
+            new_blocks: List of Notion block objects to append
+        
+        Returns:
+            Response from Notion API
+        
+        Raises:
+            Exception: If the API request fails
+        """
+        response = requests.patch(
+            f"{self.base_url}/blocks/{page_id}/children",
+            headers=self.headers,
+            json={"children": new_blocks},
+        )
+        
+        if response.status_code != 200:
+            error_data = response.json()
+            raise Exception(
+                f"Failed to append to page: {response.status_code} - "
+                f"{error_data.get('message', 'Unknown error')}"
+            )
+        
+        return response.json()
+    
+    def update_page_properties(
+        self,
+        page_id: str,
+        properties: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """
+        Update properties of an existing Notion page.
+        
+        Args:
+            page_id: The page ID to update
+            properties: Properties to update (Notion API format)
+        
+        Returns:
+            Updated page data
+        
+        Raises:
+            Exception: If the API request fails
+        """
+        response = requests.patch(
+            f"{self.base_url}/pages/{page_id}",
+            headers=self.headers,
+            json={"properties": properties},
+        )
+        
+        if response.status_code != 200:
+            error_data = response.json()
+            raise Exception(
+                f"Failed to update page properties: {response.status_code} - "
+                f"{error_data.get('message', 'Unknown error')}"
+            )
+        
+        return response.json()
+    
+    def build_update_content(
+        self,
+        conversation_type: str,
+        analysis: Dict[str, Any],
+        session_number: int = 2,
+    ) -> List[Dict[str, Any]]:
+        """
+        Build content blocks for updating a note with a new session.
+        
+        Args:
+            conversation_type: Type of conversation
+            analysis: Structured analysis data for the new session
+            session_number: Session number for the header
+        
+        Returns:
+            List of Notion block objects for the update
+        """
+        blocks = []
+        
+        # Add divider
+        blocks.append(self.build_divider_block())
+        blocks.append(self.build_paragraph_block(""))
+        
+        # Add update header with date
+        update_date = datetime.now().strftime("%B %d, %Y")
+        blocks.append(self.build_heading_block(f"Update - {update_date}", 2))
+        blocks.append(self.build_paragraph_block(""))
+        
+        # Add new content based on conversation type
+        if conversation_type == "project_problem_solving":
+            blocks.extend(self._build_project_content(analysis))
+        elif conversation_type == "idea_brainstorming":
+            blocks.extend(self._build_brainstorming_content(analysis))
+        elif conversation_type == "learning_educational":
+            blocks.extend(self._build_learning_content(analysis))
+        elif conversation_type == "general_discussion":
+            blocks.extend(self._build_general_content(analysis))
+        
+        return blocks
+    
     def create_page(
         self,
         title: str,

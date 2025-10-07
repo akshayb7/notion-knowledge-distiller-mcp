@@ -179,6 +179,41 @@ async def list_tools() -> list[Tool]:
                         "required": ["note_id"],
                     },
                 ),
+                Tool(
+                    name="update_note",
+                    description=(
+                        "Update an existing note by appending a new session. "
+                        "Preserves all old content and adds a new dated section with the update. "
+                        "Also updates the note's metadata (date, topics). "
+                        "Use this when continuing work on an existing topic."
+                    ),
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "note_id": {
+                                "type": "string",
+                                "description": "The ID of the note to update (from search_notes results)",
+                            },
+                            "conversation_type": {
+                                "type": "string",
+                                "description": (
+                                    "The conversation type (should match the existing note type). "
+                                    "One of: project_problem_solving, idea_brainstorming, "
+                                    "learning_educational, general_discussion"
+                                ),
+                            },
+                            "analysis": {
+                                "type": "string",
+                                "description": (
+                                    "Your structured analysis of the NEW session in JSON format. "
+                                    "Should reference the previous session context. "
+                                    "Same structure as create_notion_notes."
+                                ),
+                            }
+                        },
+                        "required": ["note_id", "conversation_type", "analysis"],
+                    },
+                ),
             ])
     
     return tools
@@ -515,6 +550,150 @@ async def call_tool(name: str, arguments: Any) -> list[TextContent]:
                 TextContent(
                     type="text",
                     text=f"❌ Error reading note: {str(e)}",
+                )
+            ]
+    
+    elif name == "update_note":
+        if not notion_client or not NOTION_DATABASE_ID:
+            return [
+                TextContent(
+                    type="text",
+                    text="❌ Error: Database not configured. Update is only available with Notion database setup.",
+                )
+            ]
+        
+        try:
+            note_id = arguments.get("note_id", "")
+            conversation_type = arguments.get("conversation_type", "general_discussion")
+            analysis_json = arguments.get("analysis", "{}")
+            
+            if not note_id:
+                return [
+                    TextContent(
+                        type="text",
+                        text="❌ Error: note_id is required. Use search_notes to find note IDs.",
+                    )
+                ]
+            
+            # Validate conversation type
+            valid_types = list(CONVERSATION_TYPES.keys())
+            if conversation_type not in valid_types:
+                return [
+                    TextContent(
+                        type="text",
+                        text=f"❌ Error: Invalid conversation type '{conversation_type}'. "
+                        f"Must be one of: {', '.join(valid_types)}",
+                    )
+                ]
+            
+            # Parse the analysis JSON
+            analysis = json.loads(analysis_json)
+            
+            # Extract new topics
+            new_topics = analysis.get("topics", [])
+            
+            # Get existing page to merge topics
+            page_data = notion_client.get_page_content(note_id)
+            properties = page_data["page"].get("properties", {})
+            
+            # Get existing topics
+            existing_topics_prop = properties.get("Topics", {}).get("multi_select", [])
+            existing_topics = [topic.get("name") for topic in existing_topics_prop]
+            
+            # Merge topics (unique)
+            all_topics = list(set(existing_topics + new_topics))
+            
+            # Build update content blocks
+            update_blocks = notion_client.build_update_content(
+                conversation_type=conversation_type,
+                analysis=analysis,
+            )
+            
+            # Append new content to the page
+            notion_client.append_to_page(
+                page_id=note_id,
+                new_blocks=update_blocks,
+            )
+            
+            # Update page properties (date and topics)
+            from datetime import datetime
+            notion_client.update_page_properties(
+                page_id=note_id,
+                properties={
+                    "Date": {
+                        "date": {
+                            "start": datetime.now().isoformat()
+                        }
+                    },
+                    "Topics": {
+                        "multi_select": [{"name": topic} for topic in all_topics]
+                    }
+                }
+            )
+            
+            # Get updated page URL
+            page_url = page_data["page"].get("url", "")
+            
+            # Count sections for response
+            type_name = conversation_type.replace("_", " ").title()
+            
+            if conversation_type == "project_problem_solving":
+                section_counts = {
+                    "insights": len(analysis.get("key_insights", [])),
+                    "decisions": len(analysis.get("decisions_made", [])),
+                    "action_items": len(analysis.get("action_items", []))
+                }
+                sections_text = f"- {section_counts['insights']} new insights\n- {section_counts['decisions']} new decisions\n- {section_counts['action_items']} new action items"
+            
+            elif conversation_type == "idea_brainstorming":
+                section_counts = {
+                    "ideas": len(analysis.get("core_ideas", [])),
+                    "points": len(analysis.get("interesting_points", [])),
+                    "questions": len(analysis.get("follow_up_questions", []))
+                }
+                sections_text = f"- {section_counts['ideas']} new ideas\n- {section_counts['points']} new points\n- {section_counts['questions']} new questions"
+            
+            elif conversation_type == "learning_educational":
+                section_counts = {
+                    "concepts": len(analysis.get("key_concepts", [])),
+                    "examples": len(analysis.get("examples", [])),
+                    "takeaways": len(analysis.get("takeaways", []))
+                }
+                sections_text = f"- {section_counts['concepts']} new concepts\n- {section_counts['examples']} new examples\n- {section_counts['takeaways']} new takeaways"
+            
+            else:  # general_discussion
+                section_counts = {
+                    "points": len(analysis.get("main_points", []))
+                }
+                sections_text = f"- {section_counts['points']} new points"
+            
+            return [
+                TextContent(
+                    type="text",
+                    text=f"✅ Successfully updated note!\n\n"
+                    f"📄 **Note ID**: {note_id}\n"
+                    f"📑 **Type**: {type_name}\n"
+                    f"📅 **Updated**: {datetime.now().strftime('%B %d, %Y')}\n"
+                    f"🔗 **URL**: {page_url}\n\n"
+                    f"Added new session with:\n"
+                    f"{sections_text}\n\n"
+                    f"🏷️ **Topics**: {', '.join(all_topics)}\n"
+                    f"📜 All previous content preserved!",
+                )
+            ]
+        
+        except json.JSONDecodeError as e:
+            return [
+                TextContent(
+                    type="text",
+                    text=f"❌ Error: Failed to parse analysis JSON.\n\nError: {str(e)}",
+                )
+            ]
+        except Exception as e:
+            return [
+                TextContent(
+                    type="text",
+                    text=f"❌ Error updating note: {str(e)}",
                 )
             ]
     
