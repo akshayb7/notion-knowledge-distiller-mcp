@@ -430,6 +430,105 @@ class NotionClient:
         
         return blocks
     
+    def calculate_similarity_score(
+        self,
+        new_title: str,
+        new_topics: List[str],
+        existing_title: str,
+        existing_topics: List[str],
+        last_updated: str,
+    ) -> Dict[str, Any]:
+        """
+        Calculate similarity score between new content and existing note.
+        
+        Args:
+            new_title: Title of new content
+            new_topics: Topics from new content
+            existing_title: Title of existing note
+            existing_topics: Topics from existing note
+            last_updated: ISO datetime of last update
+        
+        Returns:
+            Dictionary with score, details, and recommendation
+        """
+        from datetime import datetime, timezone
+        
+        score = 0.0
+        details = {}
+        
+        # Topic overlap (0-60 points)
+        new_topics_lower = [t.lower() for t in new_topics]
+        existing_topics_lower = [t.lower() for t in existing_topics]
+        common_topics = set(new_topics_lower) & set(existing_topics_lower)
+        
+        if existing_topics_lower:
+            topic_overlap = len(common_topics) / len(set(new_topics_lower + existing_topics_lower))
+            topic_score = topic_overlap * 60
+            score += topic_score
+            details['topic_overlap'] = f"{len(common_topics)}/{len(existing_topics_lower)} topics match"
+            details['common_topics'] = list(common_topics)
+        else:
+            details['topic_overlap'] = "No topics to compare"
+            details['common_topics'] = []
+        
+        # Title similarity (0-30 points)
+        new_words = set(new_title.lower().split())
+        existing_words = set(existing_title.lower().split())
+        common_words = new_words & existing_words
+        
+        if existing_words:
+            title_overlap = len(common_words) / len(new_words | existing_words)
+            title_score = title_overlap * 30
+            score += title_score
+            details['title_similarity'] = f"{len(common_words)} words match"
+        else:
+            details['title_similarity'] = "No title overlap"
+        
+        # Recency bonus (0-10 points)
+        try:
+            last_updated_dt = datetime.fromisoformat(last_updated.replace('Z', '+00:00'))
+            now = datetime.now(timezone.utc)
+            days_old = (now - last_updated_dt).days
+            
+            if days_old < 1:
+                recency_score = 10
+                details['recency'] = "Updated today"
+            elif days_old < 7:
+                recency_score = 7
+                details['recency'] = f"Updated {days_old} days ago"
+            elif days_old < 30:
+                recency_score = 3
+                details['recency'] = f"Updated {days_old} days ago"
+            else:
+                recency_score = 0
+                details['recency'] = f"Updated {days_old} days ago"
+            
+            score += recency_score
+        except:
+            details['recency'] = "Unknown"
+        
+        # Determine recommendation based on score
+        if score >= 60:
+            recommendation = "update"
+            confidence = "high"
+        elif score >= 40:
+            recommendation = "update"
+            confidence = "medium"
+        elif score >= 20:
+            recommendation = "ask"
+            confidence = "low"
+        else:
+            recommendation = "create_new"
+            confidence = "high"
+        
+        return {
+            'score': round(score, 1),
+            'max_score': 100,
+            'details': details,
+            'recommendation': recommendation,
+            'confidence': confidence
+        }
+    
     def create_page(
         self,
         title: str,
