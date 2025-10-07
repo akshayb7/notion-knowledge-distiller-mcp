@@ -26,7 +26,7 @@ CONVERSATION_TYPES = {
 SCHEMA_TEMPLATES = {
     "project_problem_solving": {
         "title": "string (max 100 chars)",
-        "summary": "string (2-3 sentences)",
+        "summary": "string",
         "key_insights": ["array of strings"],
         "decisions_made": ["array of strings"],
         "action_items": ["array of strings"],
@@ -34,7 +34,7 @@ SCHEMA_TEMPLATES = {
     },
     "idea_brainstorming": {
         "title": "string (max 100 chars)",
-        "summary": "string (2-3 sentences)",
+        "summary": "string",
         "core_ideas": ["array of strings"],
         "interesting_points": ["array of strings"],
         "follow_up_questions": ["array of strings"],
@@ -42,7 +42,7 @@ SCHEMA_TEMPLATES = {
     },
     "learning_educational": {
         "title": "string (max 100 chars)",
-        "summary": "string (2-3 sentences)",
+        "summary": "string",
         "key_concepts": ["array of strings"],
         "examples": ["array of strings"],
         "takeaways": ["array of strings"],
@@ -50,7 +50,7 @@ SCHEMA_TEMPLATES = {
     },
     "general_discussion": {
         "title": "string (max 100 chars)",
-        "summary": "string (2-3 sentences)",
+        "summary": "string",
         "main_points": ["array of strings"],
         "topics": ["array of 3-5 keywords"]
     }
@@ -91,7 +91,7 @@ Return your analysis in this EXACT JSON format:
 
 GUIDELINES:
 - Title should be specific and descriptive (max 100 chars)
-- Summary should be 2-3 sentences capturing the essence
+- Summary capturing the essence
 - Be concise but informative in all sections
 - Use empty arrays [] for sections with no content
 - Topics should be 3-5 relevant keywords for categorization

@@ -120,6 +120,210 @@ class NotionClient:
         
         return response.json()
     
+    def query_database(
+        self,
+        database_id: str,
+        filter_conditions: Optional[Dict[str, Any]] = None,
+        sorts: Optional[List[Dict[str, Any]]] = None,
+        page_size: int = 10,
+    ) -> Dict[str, Any]:
+        """
+        Query a Notion database with filters and sorting.
+        
+        Args:
+            database_id: The database ID to query
+            filter_conditions: Optional filter object (Notion API format)
+            sorts: Optional list of sort objects
+            page_size: Number of results to return (default 10, max 100)
+        
+        Returns:
+            Dictionary containing query results
+        
+        Raises:
+            Exception: If the API request fails
+        """
+        query_data = {
+            "page_size": min(page_size, 100)
+        }
+        
+        if filter_conditions:
+            query_data["filter"] = filter_conditions
+        
+        if sorts:
+            query_data["sorts"] = sorts
+        
+        response = requests.post(
+            f"{self.base_url}/databases/{database_id}/query",
+            headers=self.headers,
+            json=query_data,
+        )
+        
+        if response.status_code != 200:
+            error_data = response.json()
+            raise Exception(
+                f"Failed to query Notion database: {response.status_code} - "
+                f"{error_data.get('message', 'Unknown error')}"
+            )
+        
+        return response.json()
+    
+    def get_page_content(self, page_id: str) -> Dict[str, Any]:
+        """
+        Get the full content of a Notion page including all blocks.
+        
+        Args:
+            page_id: The page ID to retrieve
+        
+        Returns:
+            Dictionary containing page data and content blocks
+        
+        Raises:
+            Exception: If the API request fails
+        """
+        # Get page properties
+        page_response = requests.get(
+            f"{self.base_url}/pages/{page_id}",
+            headers=self.headers,
+        )
+        
+        if page_response.status_code != 200:
+            error_data = page_response.json()
+            raise Exception(
+                f"Failed to get page: {page_response.status_code} - "
+                f"{error_data.get('message', 'Unknown error')}"
+            )
+        
+        page_data = page_response.json()
+        
+        # Get page blocks (content)
+        blocks_response = requests.get(
+            f"{self.base_url}/blocks/{page_id}/children",
+            headers=self.headers,
+        )
+        
+        if blocks_response.status_code != 200:
+            error_data = blocks_response.json()
+            raise Exception(
+                f"Failed to get page blocks: {blocks_response.status_code} - "
+                f"{error_data.get('message', 'Unknown error')}"
+            )
+        
+        blocks_data = blocks_response.json()
+        
+        return {
+            "page": page_data,
+            "blocks": blocks_data.get("results", [])
+        }
+    
+    def format_search_results(self, query_results: Dict[str, Any]) -> List[Dict[str, str]]:
+        """
+        Format database query results into a readable structure.
+        
+        Args:
+            query_results: Raw query results from Notion API
+        
+        Returns:
+            List of formatted result dictionaries
+        """
+        formatted_results = []
+        
+        for page in query_results.get("results", []):
+            properties = page.get("properties", {})
+            
+            # Extract title
+            title_prop = properties.get("Title", {}).get("title", [])
+            title = title_prop[0].get("text", {}).get("content", "Untitled") if title_prop else "Untitled"
+            
+            # Extract type
+            type_prop = properties.get("Type", {}).get("select")
+            page_type = type_prop.get("name") if type_prop else "Unknown"
+            
+            # Extract date
+            date_prop = properties.get("Date", {}).get("date")
+            date = date_prop.get("start") if date_prop else "Unknown"
+            
+            # Extract topics
+            topics_prop = properties.get("Topics", {}).get("multi_select", [])
+            topics = [topic.get("name") for topic in topics_prop]
+            
+            # Extract status
+            status_prop = properties.get("Status", {}).get("select")
+            status = status_prop.get("name") if status_prop else "Unknown"
+            
+            formatted_results.append({
+                "id": page.get("id"),
+                "title": title,
+                "type": page_type,
+                "date": date,
+                "topics": ", ".join(topics) if topics else "None",
+                "status": status,
+                "url": page.get("url", "")
+            })
+        
+        return formatted_results
+    
+    def format_page_content(self, page_data: Dict[str, Any]) -> str:
+        """
+        Format page content into readable text.
+        
+        Args:
+            page_data: Page data including blocks from get_page_content()
+        
+        Returns:
+            Formatted string of page content
+        """
+        page = page_data.get("page", {})
+        blocks = page_data.get("blocks", [])
+        
+        # Get title
+        properties = page.get("properties", {})
+        title_prop = properties.get("Title", {}).get("title", [])
+        title = title_prop[0].get("text", {}).get("content", "Untitled") if title_prop else "Untitled"
+        
+        # Start with title
+        content_lines = [f"# {title}\n"]
+        
+        # Process blocks
+        for block in blocks:
+            block_type = block.get("type")
+            
+            if block_type == "heading_2":
+                text = self._extract_text_from_block(block, block_type)
+                content_lines.append(f"\n## {text}\n")
+            
+            elif block_type == "heading_3":
+                text = self._extract_text_from_block(block, block_type)
+                content_lines.append(f"\n### {text}\n")
+            
+            elif block_type == "paragraph":
+                text = self._extract_text_from_block(block, block_type)
+                if text:
+                    content_lines.append(f"{text}\n")
+            
+            elif block_type == "bulleted_list_item":
+                text = self._extract_text_from_block(block, block_type)
+                content_lines.append(f"- {text}")
+            
+            elif block_type == "to_do":
+                text = self._extract_text_from_block(block, block_type)
+                checked = block.get(block_type, {}).get("checked", False)
+                checkbox = "[x]" if checked else "[ ]"
+                content_lines.append(f"{checkbox} {text}")
+            
+            elif block_type == "callout":
+                text = self._extract_text_from_block(block, block_type)
+                content_lines.append(f"> {text}\n")
+            
+            elif block_type == "divider":
+                content_lines.append("---\n")
+        
+        return "\n".join(content_lines)
+    
+    def _extract_text_from_block(self, block: Dict[str, Any], block_type: str) -> str:
+        """Extract plain text from a block's rich_text array."""
+        rich_text = block.get(block_type, {}).get("rich_text", [])
+        return "".join([text.get("plain_text", "") for text in rich_text])
+    
     def create_page(
         self,
         title: str,

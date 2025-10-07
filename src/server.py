@@ -125,6 +125,61 @@ async def list_tools() -> list[Tool]:
                 },
             ),
         ])
+        
+        # Only add search/read tools if database is configured
+        if NOTION_DATABASE_ID:
+            tools.extend([
+                Tool(
+                    name="search_notes",
+                    description=(
+                        "Search through past conversation notes in the Notion database. "
+                        "Can search by title keywords, topics, conversation type, or combinations. "
+                        "Returns a list of matching notes with their metadata."
+                    ),
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "query": {
+                                "type": "string",
+                                "description": (
+                                    "Search query - can be keywords from title, topics to search for, or conversation type. "
+                                    "Examples: 'Unity', 'Python MCP', 'brainstorming about games'"
+                                ),
+                            },
+                            "conversation_type": {
+                                "type": "string",
+                                "description": (
+                                    "Optional filter by conversation type. "
+                                    "One of: Project Problem Solving, Idea Brainstorming, Learning Educational, General Discussion"
+                                ),
+                            },
+                            "limit": {
+                                "type": "number",
+                                "description": "Maximum number of results to return (default 10, max 20)",
+                            }
+                        },
+                        "required": ["query"],
+                    },
+                ),
+                Tool(
+                    name="read_note",
+                    description=(
+                        "Read the full content of a specific note from the database. "
+                        "Use this after search_notes to get the complete details of a note. "
+                        "Returns the formatted content including all sections."
+                    ),
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "note_id": {
+                                "type": "string",
+                                "description": "The ID of the note to read (from search_notes results)",
+                            }
+                        },
+                        "required": ["note_id"],
+                    },
+                ),
+            ])
     
     return tools
 
@@ -328,6 +383,138 @@ async def call_tool(name: str, arguments: Any) -> list[TextContent]:
                 TextContent(
                     type="text",
                     text=f"❌ Error creating Notion page: {str(e)}",
+                )
+            ]
+    
+    elif name == "search_notes":
+        if not notion_client or not NOTION_DATABASE_ID:
+            return [
+                TextContent(
+                    type="text",
+                    text="❌ Error: Database not configured. Search is only available with Notion database setup.",
+                )
+            ]
+        
+        try:
+            query = arguments.get("query", "")
+            conversation_type = arguments.get("conversation_type")
+            limit = arguments.get("limit", 10)
+            limit = min(int(limit), 20)  # Cap at 20
+            
+            # Build filter conditions
+            filter_conditions = None
+            
+            # If conversation type is specified, filter by it
+            if conversation_type:
+                filter_conditions = {
+                    "property": "Type",
+                    "select": {
+                        "equals": conversation_type
+                    }
+                }
+            
+            # Query the database
+            results = notion_client.query_database(
+                database_id=NOTION_DATABASE_ID,
+                filter_conditions=filter_conditions,
+                sorts=[{"property": "Date", "direction": "descending"}],
+                page_size=limit,
+            )
+            
+            # Format results
+            formatted_results = notion_client.format_search_results(results)
+            
+            # Filter by query string (title/topics) in memory since Notion API doesn't support full-text search
+            if query:
+                query_lower = query.lower()
+                filtered_results = [
+                    r for r in formatted_results
+                    if query_lower in r["title"].lower() or query_lower in r["topics"].lower()
+                ]
+            else:
+                filtered_results = formatted_results
+            
+            if not filtered_results:
+                return [
+                    TextContent(
+                        type="text",
+                        text=f"🔍 No notes found matching '{query}'"
+                        + (f" with type '{conversation_type}'" if conversation_type else ""),
+                    )
+                ]
+            
+            # Format response
+            result_text = f"🔍 Found {len(filtered_results)} note(s)"
+            if query:
+                result_text += f" matching '{query}'"
+            if conversation_type:
+                result_text += f" (Type: {conversation_type})"
+            result_text += ":\n\n"
+            
+            for i, result in enumerate(filtered_results, 1):
+                result_text += f"{i}. **{result['title']}**\n"
+                result_text += f"   - Type: {result['type']}\n"
+                result_text += f"   - Date: {result['date']}\n"
+                result_text += f"   - Topics: {result['topics']}\n"
+                result_text += f"   - Status: {result['status']}\n"
+                result_text += f"   - ID: `{result['id']}`\n"
+                result_text += f"   - URL: {result['url']}\n\n"
+            
+            result_text += "\n💡 Use `read_note` with an ID to see the full content."
+            
+            return [
+                TextContent(
+                    type="text",
+                    text=result_text,
+                )
+            ]
+        
+        except Exception as e:
+            return [
+                TextContent(
+                    type="text",
+                    text=f"❌ Error searching notes: {str(e)}",
+                )
+            ]
+    
+    elif name == "read_note":
+        if not notion_client:
+            return [
+                TextContent(
+                    type="text",
+                    text="❌ Error: Notion client not configured.",
+                )
+            ]
+        
+        try:
+            note_id = arguments.get("note_id", "")
+            
+            if not note_id:
+                return [
+                    TextContent(
+                        type="text",
+                        text="❌ Error: note_id is required. Use search_notes to find note IDs.",
+                    )
+                ]
+            
+            # Get page content
+            page_data = notion_client.get_page_content(note_id)
+            
+            # Format content
+            formatted_content = notion_client.format_page_content(page_data)
+            
+            return [
+                TextContent(
+                    type="text",
+                    text=f"📄 **Note Content:**\n\n{formatted_content}",
+                )
+            ]
+        
+        except Exception as e:
+            return [
+                TextContent(
+                    type="text",
+                    text=f"❌ Error reading note: {str(e)}",
                 )
             ]
     
